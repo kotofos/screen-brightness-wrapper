@@ -30,8 +30,7 @@ def check_config(cfg):
             cfg[key] = def_value
 
 
-class MonitorController():
-
+class MonitorController:
     def __init__(self):
 
         try:
@@ -61,15 +60,15 @@ class MonitorController():
 
         logging.info('new brightness {}'.format(brightness))
         if platform.system() == 'Windows':
-            subprocess.call(('ScreenBright.exe', '-set', 'brightness', str(brightness)))
+            subprocess.run(('ScreenBright.exe', '-set', 'brightness', str(brightness)))
         elif platform.system() == 'Darwin':
-            subprocess.call(('ddcctl', '-d', '1', '-b', str(brightness)))
-
+            subprocess.run(('ddcctl', '-d', '1', '-b', str(brightness)))
 
         self.config['brightness'] = brightness
         with open('config.yaml', 'w') as ymfile:
             yaml.dump(self.config, ymfile)
             logging.debug('config saved')
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
