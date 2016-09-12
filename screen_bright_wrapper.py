@@ -1,8 +1,10 @@
-import subprocess
-import logging
-import yaml
 import argparse
+import logging
 import os
+import subprocess
+import platform
+
+import yaml
 
 MAX_BRIGHTNESS = 100
 MIN_BRIGHTNESS = 0
@@ -62,7 +64,11 @@ if __name__ == '__main__':
     brightness = clamp_brightness(brightness)
 
     logging.info('new brightness {}'.format(brightness))
-    subprocess.call(('ScreenBright.exe', '-set', 'brightness', str(brightness)))
+    if platform.system() == 'Windows':
+        subprocess.call(('ScreenBright.exe', '-set', 'brightness', str(brightness)))
+    elif platform.system() == 'Darwin':
+        subprocess.call(('ddcctl', '-d', '1', '-b', str(brightness)))
+
 
     config['brightness'] = brightness
     with open('config.yaml', 'w') as ymfile:
