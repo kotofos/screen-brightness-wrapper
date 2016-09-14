@@ -34,7 +34,8 @@ class MonitorController:
     def __init__(self):
 
         try:
-            with open('config.yaml', 'r') as ymfile:
+            self.config_file = os.path.expanduser('~/.monitor_controller/config.yaml')
+            with open(self.config_file, 'r') as ymfile:
                 self.config = yaml.load(ymfile)
                 logging.debug('config loaded')
         except FileNotFoundError:
@@ -65,7 +66,8 @@ class MonitorController:
             subprocess.run(('ddcctl', '-d', '1', '-b', str(brightness)))
 
         self.config['brightness'] = brightness
-        with open('config.yaml', 'w') as ymfile:
+        os.makedirs(os.path.split(self.config_file)[0], exist_ok=True)
+        with open(self.config_file, 'w') as ymfile:
             yaml.dump(self.config, ymfile)
             logging.debug('config saved')
 
