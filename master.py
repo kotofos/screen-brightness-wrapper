@@ -137,7 +137,7 @@ class MonitorController:
         elif platform.system() == 'Darwin':
             subprocess.run(('ddcctl', '-d', '1', '-b', data))
         elif platform.system() == 'Linux':
-            subprocess.run(('sudo', 'ddctool', 'setvcp', '10', data, '--bus', '0'))
+            subprocess.run(('ddctool', 'setvcp', '10', data, '--bus', '0'))
 
 
 class RemoteMonitorController(MonitorController):
