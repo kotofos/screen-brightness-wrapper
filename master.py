@@ -131,11 +131,13 @@ class MonitorController:
         self.set_brightness(brightness)
 
     def send_command(self, data):
-
+        data = str(data)
         if platform.system() == 'Windows':
-            subprocess.run(('ScreenBright.exe', '-set', 'brightness', str(data)))
+            subprocess.run(('ScreenBright.exe', '-set', 'brightness', data))
         elif platform.system() == 'Darwin':
-            subprocess.run(('ddcctl', '-d', '1', '-b', str(data)))
+            subprocess.run(('ddcctl', '-d', '1', '-b', data))
+        elif platform.system() == 'Linux':
+            subprocess.run(('sudo', 'ddctool', 'setvcp', '10', data, '--bus', '0'))
 
 
 class RemoteMonitorController(MonitorController):
