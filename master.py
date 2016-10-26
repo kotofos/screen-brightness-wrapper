@@ -31,8 +31,9 @@ def clamp_brightness(val):
 
 
 class Config():
-    def __init__(self, is_master, ip_addr=None):
-        self.is_master=is_master
+    def __init__(self, is_master,monitor_id=None, ip_addr=None):
+        self.is_master = is_master
+        self.monitor_id = monitor_id
         if ip_addr is None:
             self.ip = '127.0.0.1'
         else:
@@ -46,6 +47,7 @@ class Config():
             self._config = {}
             logging.warning('no config found, using defaults')
             self.init_config_file()
+            self._config['debug'] = True
         self.check_config()
 
     def check_config(self):
@@ -53,10 +55,18 @@ class Config():
 
         if self._config.get('debug', None) is None:
             self._config['debug'] = True
-        if self._config.get(self.ip, None) is None:
-            self._config[self.ip] = {'brightness': 50}
-        elif self._config[self.ip].get('brightness', None) is None:
-            self._config[self.ip]['brightness'] = DEFAULT_BRIGHTNESS_VALUE
+        try:
+            self._config[self.ip][self.monitor_id]['brightness']
+        except (AttributeError, KeyError):
+            self._config[self.ip][self.monitor_id] = {'brightness': DEFAULT_BRIGHTNESS_VALUE}
+
+        if self.monitor_id is None:
+            try:
+                self.monitor_id = self._config['default_monitor_id']
+                logging.debug('No monitor id requested, using default from config {}'.format(self.monitor_id))
+            except KeyError:
+                logging.debug("No monitor id, using default")
+                pass
 
     def load_config(self):
         with open(self.config_file, 'r') as ymfile:
@@ -67,29 +77,20 @@ class Config():
         with open(self.config_file, 'w') as ymfile:
             yaml.dump(self._config, ymfile)
             logging.debug('config saved')
-        if self.is_master:
+        if self.is_master and False: #todo stat
             value_logger = LogSettings(self._config)
             value_logger.log()
 
     def init_config_file(self):
         os.makedirs(os.path.split(self.config_file)[0], exist_ok=True)
 
-    def try_get_item(self, item):
-        if self._config is None:
-            return None
-
-        if item == 'debug':
-            return self._config[item]
-
-        return self._config[self.ip].get(item, None)
-
     @property
     def brightness(self):
-        return self._config[self.ip]['brightness']
+        return self._config[self.ip][self.monitor_id]['brightness']
 
     @brightness.setter
     def brightness(self, val):
-        self._config[self.ip]['brightness'] = val
+        self._config[self.ip][self.monitor_id]['brightness'] = val
 
     @property
     def debug(self):
@@ -100,11 +101,10 @@ class Config():
         self._config['debug'] = val
 
 
-
 class MonitorController:
-    def __init__(self, is_master):
+    def __init__(self, is_master, monitor_id):
 
-        self.config = Config(is_master)
+        self.config = Config(is_master, monitor_id)
 
         if self.config.debug:
             logging.basicConfig(level=logging.DEBUG)
@@ -115,7 +115,7 @@ class MonitorController:
 
     def set_brightness(self, brightness):
         old_brightness = self.config.brightness
-        logging.debug('old brightness {}'.format(old_brightness))
+        logging.debug('old brightness for monitor {} is {}'.format(self.config.monitor_id, old_brightness))
 
         logging.debug('new brihtness {}'.format(brightness))
         brightness = clamp_brightness(brightness)
@@ -135,11 +135,19 @@ class MonitorController:
     def send_command(self, data):
         data = str(data)
         if platform.system() == 'Windows':
-            subprocess.run(('ScreenBright.exe', '-set', 'brightness', data))
+            if self.config.monitor_id is None:
+                subprocess.run(('ScreenBright.exe', '-set', 'brightness', data))
+            else:
+                subprocess.run(('ScreenBright.exe', '-set', 'screen', str(self.config.monitor_id) ,'brightness', data))
+
         elif platform.system() == 'Darwin':
             subprocess.run(('ddcctl', '-d', '1', '-b', data))
         elif platform.system() == 'Linux':
-            subprocess.run(('ddctool', 'setvcp', '10', data, '--bus', '0'))
+            if self.config.monitor_id is None:
+                subprocess.run(('ddctool', 'setvcp', '10', data, '--bus', '0'))
+            else:
+                subprocess.run(('ddctool', 'setvcp', '10', data, '--bus', str(self.config.monitor_id)))
+
 
 
 class RemoteMonitorController(MonitorController):
@@ -189,11 +197,12 @@ if __name__ == '__main__':
                             type=int, choices=range(-100, 101), default=0)
 
     arg_parser.add_argument('-a', '--address', dest='addr', help='remote address')
+    arg_parser.add_argument('-m', '--monitor', dest='monitor_id', help='monitor id', type=int)
     args = arg_parser.parse_args()
 
     if args.addr is not None:
         ip = str(ipaddress.ip_address(args.addr))
         mn = RemoteMonitorController(ip)
     else:
-        mn = MonitorController(True)
+        mn = MonitorController(True, args.monitor_id)
     mn.change_brightness(args.brightness_change)

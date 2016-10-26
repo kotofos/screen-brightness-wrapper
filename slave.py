@@ -15,7 +15,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         except ValueError:
             pass
         else:
-            mc = MonitorController(False)
+            mc = MonitorController(False, None)
             mc.set_brightness(self.data)
 
 
