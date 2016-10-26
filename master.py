@@ -31,11 +31,12 @@ def clamp_brightness(val):
 
 
 class Config():
-    def __init__(self, ip=None):
-        if ip is None:
+    def __init__(self, is_master, ip_addr=None):
+        self.is_master=is_master
+        if ip_addr is None:
             self.ip = '127.0.0.1'
         else:
-            self.ip = ip
+            self.ip = ip_addr
 
         self.config_file = os.path.expanduser('~/.monitor_controller/config.yaml')
 
@@ -66,8 +67,9 @@ class Config():
         with open(self.config_file, 'w') as ymfile:
             yaml.dump(self._config, ymfile)
             logging.debug('config saved')
-        value_logger = LogSettings(self._config)
-        value_logger.log()
+        if self.is_master:
+            value_logger = LogSettings(self._config)
+            value_logger.log()
 
     def init_config_file(self):
         os.makedirs(os.path.split(self.config_file)[0], exist_ok=True)
@@ -100,9 +102,9 @@ class Config():
 
 
 class MonitorController:
-    def __init__(self):
+    def __init__(self, is_master):
 
-        self.config = Config()
+        self.config = Config(is_master)
 
         if self.config.debug:
             logging.basicConfig(level=logging.DEBUG)
@@ -143,7 +145,7 @@ class MonitorController:
 class RemoteMonitorController(MonitorController):
     def __init__(self, addr):
         self.addr = addr
-        self.config = Config(self.addr)
+        self.config = Config(True, self.addr)
 
     def send_command(self, data):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -193,5 +195,5 @@ if __name__ == '__main__':
         ip = str(ipaddress.ip_address(args.addr))
         mn = RemoteMonitorController(ip)
     else:
-        mn = MonitorController()
+        mn = MonitorController(True)
     mn.change_brightness(args.brightness_change)
