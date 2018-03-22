@@ -1,5 +1,5 @@
 import socketserver
-from master import MonitorController
+from master import LocalMonitorController
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
@@ -15,7 +15,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         except ValueError:
             pass
         else:
-            mc = MonitorController(False)
+            mc = LocalMonitorController(False)
             mc.set_brightness(self.data)
 
 

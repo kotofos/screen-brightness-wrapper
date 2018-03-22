@@ -1,0 +1,2 @@
+pyaml # for config
+filelock # prevent race condition on config file

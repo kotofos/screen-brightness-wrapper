@@ -8,122 +8,212 @@ import subprocess
 import time
 import re
 from collections import OrderedDict
+from enum import Enum
 
 import yaml
+from filelock import FileLock
 
-
-PORT=48653
+PORT = 48653
+config_path = '~/.config/monitor_controller/config.yaml'
 
 MAX_BRIGHTNESS = 100
 MIN_BRIGHTNESS = 0
 DEFAULT_BRIGHTNESS_VALUE = 50
+LOCAL_IP = ['127.0.0.1', 'localhost']
+
+flock_log = logging.getLogger('filelock')
+flock_log.setLevel('WARNING')
 
 
-def clamp_brightness(val):
-    if MIN_BRIGHTNESS <= val <= MAX_BRIGHTNESS:
-        return val
-    elif val > MAX_BRIGHTNESS:
-        logging.info('max brightness')
-        return MAX_BRIGHTNESS
-    elif val < MIN_BRIGHTNESS:
-        logging.info('min brightness')
-        return MIN_BRIGHTNESS
-
+# todo config docs
+# todo supported backends
 
 class Config():
-    def __init__(self, is_master, ip_addr=None):
-        self.is_master=is_master
-        if ip_addr is None:
-            self.ip = '127.0.0.1'
-        else:
-            self.ip = ip_addr
-
-        self.config_file = os.path.expanduser('~/.monitor_controller/config.yaml')
+    """Class for accessing config file"""
+    def __init__(self,):
+        self.config_file = os.path.expanduser(config_path)
+        self.lock = FileLock(self.config_file + '.lock', timeout=10)
+        self.lock.acquire()
 
         try:
             self.load_config()
         except FileNotFoundError:
-            self._config = {}
-            logging.warning('no config found, using defaults')
-            self.init_config_file()
+            self._config_data = {}
+            logging.warning('No config found, using defaults')
+            self.init_config_filepath()
         self.check_config()
 
     def check_config(self):
-        assert isinstance(self._config, dict)
-
-        if self._config.get('debug', None) is None:
-            self._config['debug'] = True
-        if self._config.get(self.ip, None) is None:
-            self._config[self.ip] = {'brightness': 50}
-        elif self._config[self.ip].get('brightness', None) is None:
-            self._config[self.ip]['brightness'] = DEFAULT_BRIGHTNESS_VALUE
+        assert isinstance(self._config_data, dict)
 
     def load_config(self):
         with open(self.config_file, 'r') as ymfile:
-            self._config = yaml.load(ymfile)
-            logging.debug('config loaded {}'.format(self.config_file))
+            self._config_data = yaml.load(ymfile)
+            logging.debug('Config loaded {}'.format(self.config_file))
 
     def save_config(self):
         with open(self.config_file, 'w') as ymfile:
-            yaml.dump(self._config, ymfile)
-            logging.debug('config saved')
-        if self.is_master:
-            value_logger = LogSettings(self._config)
-            value_logger.log()
+            yaml.dump(self._config_data, ymfile)
+            logging.debug('Config saved')
+        self.lock.release()
 
-    def init_config_file(self):
+    def init_config_filepath(self):
         os.makedirs(os.path.split(self.config_file)[0], exist_ok=True)
-
-    def try_get_item(self, item):
-        if self._config is None:
-            return None
-
-        if item == 'debug':
-            return self._config[item]
-
-        return self._config[self.ip].get(item, None)
-
-    @property
-    def brightness(self):
-        return self._config[self.ip]['brightness']
-
-    @brightness.setter
-    def brightness(self, val):
-        self._config[self.ip]['brightness'] = val
 
     @property
     def debug(self):
-        return self._config['debug']
+        return self._config_data['debug']
 
     @debug.setter
     def debug(self, val):
-        self._config['debug'] = val
+        self._config_data['debug'] = val
+
+    @property
+    def brightness(self):
+        return self._config_data['global_brightness']
+
+    @brightness.setter
+    def brightness(self, val):
+        self._config_data['global_brightness'] = val
+
+    # to allow direct access to config dict
+    def __getitem__(self, item):
+            return self._config_data[item]
+
+    def get(self, item, default):
+        return self._config_data.get(item, default)
 
 
-
-class MonitorController:
-    def __init__(self, is_master):
-
-        self.config = Config(is_master)
+class MontiorsController:
+    def __init__(self, montors=()):
+        self.config = Config()
+        self.monitors = montors
 
         if self.config.debug:
             logging.basicConfig(level=logging.DEBUG)
         else:
             logging.basicConfig(level=logging.CRITICAL)
 
-        logging.debug('working dir: {}'.format(os.path.abspath(os.path.curdir)))
+        logging.debug(
+            'working dir: {}'.format(os.path.abspath(os.path.curdir)))
 
-    def set_brightness(self, brightness):
-        old_brightness = self.config.brightness
-        logging.debug('old brightness {}'.format(old_brightness))
+    def change_all_brightness(self, brightness_delta_steps):
+        delta = brightness_delta_steps * self.config['step']
+        old_global = self.config.brightness
+        # negative brightness are allowed, for monitors with positive offset
+        new_global = old_global + delta
 
-        logging.debug('new brihtness {}'.format(brightness))
-        brightness = clamp_brightness(brightness)
+        logging.debug(
+            'delta {} old {} new {}'.format(delta, old_global, new_global))
 
-        self.send_command(brightness)
+        any_changed = False
+        for ip, host_data in self.config['hosts'].items():
+            for monitor in host_data['monitors']:
+                cmd = self.get_cmd(host_data, monitor)
 
-        self.config.brightness = brightness
-        self.config.save_config()
+                old = old_global * monitor['brightness_mult']+ monitor[
+                    'brightness_offset']
+                old, old_clamped = self.clamp_brightness(old)
+                # new*mult + offset
+                new = new_global * monitor['brightness_mult'] + monitor[
+                    'brightness_offset']
+
+                new, clamped = self.clamp_brightness(new)
+
+                changed = new != old
+                if changed:
+                    logging.debug('host {} old {} new {}'.format(ip, old, new))
+                    self.set_brightness(cmd, ip, new, monitor)
+
+                # restore contrast
+                if self.BrightnessClampEnum.NO_CLAMP == clamped:
+                    self.set_contrast(cmd, ip, monitor['contrast_norm'],
+                                      monitor)
+                else:
+                    changed = clamped != old_clamped
+                    if clamped == self.BrightnessClampEnum.MIN:
+                        self.set_contrast(
+                            cmd, ip, monitor['contrast_min'], monitor)
+                    elif clamped == self.BrightnessClampEnum.MAX:
+                        self.set_contrast(
+                            cmd, ip, monitor['contrast_max'], monitor)
+
+
+
+
+                any_changed |= changed
+
+        if any_changed:
+            self.config.brightness = new_global
+            self.config.save_config()
+        # All montors at their limit. No changes
+        else:
+            logging.debug('No changes')
+
+    def get_cmd(self, host_data, monitor):
+        global_cmd = self.config.get('global_cmd', None)
+        host_cmd = host_data.get('cmd', global_cmd)
+        cmd = monitor.get('cmd', host_cmd)
+        assert cmd, "No cmd to execute"
+
+        return cmd
+
+    def set_brightness(self, cmd, ip, val, monitor):
+        cmd = cmd.format(
+            brightness=val,
+            mon_id=monitor['id'],
+            prop=monitor['brightness_prop_id'])
+        self.set_prop(cmd, ip)
+
+    def set_contrast(self, cmd, ip, val, monitor):
+        cmd = cmd.format(
+            brightness=val,
+            mon_id=monitor['id'],
+            prop=monitor['contrast_prop_id'])
+        self.set_prop(cmd, ip)
+
+    def set_prop(self, cmd, ip):
+        """change brightness for local or remote monitor"""
+        if ip in LOCAL_IP:
+            res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+            if res.returncode != 0:
+                logging.error('{}; {}; {}'.format(res.stdout, res.stderr,
+                                                  res.returncode))
+        else:
+            self.send_remote_command(ip, cmd)
+
+    def send_remote_command(self, ip, data):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((ip, PORT))
+            sock.sendall(str(data).encode())
+        finally:
+            sock.close()
+
+    class BrightnessClampEnum(Enum):
+        MIN = 0
+        MAX = 1
+        NO_CLAMP = 2
+
+    def clamp_brightness(self, val):
+        """Apply limits"""
+        if MIN_BRIGHTNESS <= val <= MAX_BRIGHTNESS:
+            return val, self.BrightnessClampEnum.NO_CLAMP
+        elif val > MAX_BRIGHTNESS:
+            logging.info('max brightness')
+            return MAX_BRIGHTNESS, self.BrightnessClampEnum.MAX
+        elif val < MIN_BRIGHTNESS:
+            logging.info('min brightness')
+            return MIN_BRIGHTNESS, self.BrightnessClampEnum.MIN
+
+
+
+
+class LocalMonitorController:
+    def __init__(self, is_master):
+
+        self.config = Config(is_master)
 
     def change_brightness(self, brightness_change):
         old_brightness = self.config.brightness
@@ -131,6 +221,18 @@ class MonitorController:
         logging.debug('brightness change {}'.format(brightness_change))
         brightness = brightness_change + old_brightness
         self.set_brightness(brightness)
+
+    def set_brightness(self, brightness):
+        old_brightness = self.config.brightness
+        logging.debug('old brightness {}'.format(old_brightness))
+
+        logging.debug('new brihtness {}'.format(brightness))
+        brightness = self.clamp_brightness(brightness)
+
+        self.send_command(brightness)
+
+        self.config.brightness = brightness
+        self.config.save_config()
 
     def send_command(self, data):
         data = str(data)
@@ -142,7 +244,7 @@ class MonitorController:
             subprocess.run(('ddctool', 'setvcp', '10', data, '--bus', '0'))
 
 
-class RemoteMonitorController(MonitorController):
+class RemoteMonitorController(LocalMonitorController):
     def __init__(self, addr):
         self.addr = addr
         self.config = Config(True, self.addr)
@@ -172,7 +274,8 @@ class LogSettings:
         p = subprocess.run(('display-brightness'), stdout=subprocess.PIPE)
         val = int(p.stdout.decode())
         p = subprocess.run(('brightness', '-l'), stdout=subprocess.PIPE)
-        res = re.search(('display 1: brightness ([01]\.[0-9]+)'), p.stdout.decode()).group(1)
+        res = re.search(('display 1: brightness ([01]\.[0-9]+)'),
+                        p.stdout.decode()).group(1)
 
         output += ' ' + str(val)
         output += ' ' + res
@@ -180,20 +283,32 @@ class LogSettings:
         with open(self.log_file, 'a') as f:
             f.write(output)
 
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
-    script_dir = os.path.dirname(os.path.realpath(__file__))
 
-    arg_parser = argparse.ArgumentParser(description='change monitor settings')
-    arg_parser.add_argument('-b', '--brightness', dest='brightness_change', help='change brightness by value',
-                            type=int, choices=range(-100, 101), default=0)
+    arg_parser = argparse.ArgumentParser(description='Change monitor settings')
+    arg_parser.add_argument(
+        '-b', '--brightness', dest='brightness_delta_steps',
+        help='increase or decrease brightness by step count +- value',
+        type=int, choices=range(-100, 101), default=0)
 
-    arg_parser.add_argument('-a', '--address', dest='addr', help='remote address')
+    # arg_parser.add_argument(
+    #   '-a', '--address', dest='addr',
+    #  help='remote address')
+
+    # todo
+    # arg_parser.add_argument('-m', '--monitor', dest='monitor_id',
+    # help='select monitor')
     args = arg_parser.parse_args()
+
+    mn = MontiorsController()
+    mn.change_all_brightness(args.brightness_delta_steps)
+    exit()
 
     if args.addr is not None:
         ip = str(ipaddress.ip_address(args.addr))
         mn = RemoteMonitorController(ip)
     else:
-        mn = MonitorController(True)
+        mn = LocalMonitorController()
     mn.change_brightness(args.brightness_change)
