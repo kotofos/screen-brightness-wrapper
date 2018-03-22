@@ -3,7 +3,10 @@ N local
 N remote N monitors
 
 # new*mult + offset
-
+#todo normalize offsets
+#todo clamp global value, by min_offset-1
+# todo stop on contrast change
+# todo do not set contrast every time. only when changed
 usage:
 python3 master.py -b [1|-1]
 
