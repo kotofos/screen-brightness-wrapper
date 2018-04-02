@@ -182,11 +182,8 @@ class MontiorsController:
     def set_prop(self, cmd, ip):
         """change brightness for local or remote monitor"""
         if ip in LOCAL_IP:
-            res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-            if res.returncode != 0:
-                logging.error('{}; {}; {}'.format(res.stdout, res.stderr,
-                                                  res.returncode))
+            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, check=True)
         else:
             self.send_remote_command(ip, cmd)
 
