@@ -107,40 +107,18 @@ class MontiorsController:
             'delta {} old {} new {}'.format(delta, old_global, new_global))
 
         any_changed = False
+        from threading import Thread
         for ip, host_data in self.config['hosts'].items():
+            threads=[]
             for monitor in host_data['monitors']:
-                cmd = self.get_cmd(host_data, monitor)
-
-                old = old_global * monitor['brightness_mult']+ monitor[
-                    'brightness_offset']
-                old, old_clamped = self.clamp_brightness(old)
-                # new*mult + offset
-                new = new_global * monitor['brightness_mult'] + monitor[
-                    'brightness_offset']
-
-                new, clamped = self.clamp_brightness(new)
-
-                changed = new != old
-                if changed:
-                    logging.debug('host {} old {} new {}'.format(ip, old, new))
-                    self.set_brightness(cmd, ip, new, monitor)
-
-                # restore contrast
-                if self.BrightnessClampEnum.NO_CLAMP == clamped:
-                    self.set_contrast(cmd, ip, monitor['contrast_norm'],
-                                      monitor)
-                else:
-                    changed = clamped != old_clamped
-                    if clamped == self.BrightnessClampEnum.MIN:
-                        self.set_contrast(
-                            cmd, ip, monitor['contrast_min'], monitor)
-                    elif clamped == self.BrightnessClampEnum.MAX:
-                        self.set_contrast(
-                            cmd, ip, monitor['contrast_max'], monitor)
-
-
-
-
+                retval=[]
+                t=Thread(target=self.process_monitor, args=(host_data, ip, monitor,
+                                               new_global, old_global, retval))
+                t.start()
+                threads.append((t, retval))
+            for t, retval in threads:
+                t.join()
+                changed=retval[0]
                 any_changed |= changed
 
         if any_changed:
@@ -149,6 +127,35 @@ class MontiorsController:
         # All montors at their limit. No changes
         else:
             logging.debug('No changes')
+
+    def process_monitor(self, host_data, ip, monitor, new_global, old_global,
+                        retval):
+        cmd = self.get_cmd(host_data, monitor)
+        old = old_global * monitor['brightness_mult'] + monitor[
+            'brightness_offset']
+        old, old_clamped = self.clamp_brightness(old)
+        # new*mult + offset
+        new = new_global * monitor['brightness_mult'] + monitor[
+            'brightness_offset']
+        new, clamped = self.clamp_brightness(new)
+        changed = new != old
+        if changed:
+            logging.debug('host {} old {} new {}'.format(ip, old, new))
+            self.set_brightness(cmd, ip, new, monitor)
+        # restore contrast
+        if self.BrightnessClampEnum.NO_CLAMP == clamped:
+            self.set_contrast(cmd, ip, monitor['contrast_norm'],
+                              monitor)
+        else:
+            changed = clamped != old_clamped
+            if clamped == self.BrightnessClampEnum.MIN:
+                self.set_contrast(
+                    cmd, ip, monitor['contrast_min'], monitor)
+            elif clamped == self.BrightnessClampEnum.MAX:
+                self.set_contrast(
+                    cmd, ip, monitor['contrast_max'], monitor)
+        # aka return from thread
+        retval.append(changed)
 
     def get_cmd(self, host_data, monitor):
         global_cmd = self.config.get('global_cmd', None)
