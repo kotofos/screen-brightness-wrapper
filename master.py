@@ -30,7 +30,8 @@ flock_log.setLevel('WARNING')
 
 class Config():
     """Class for accessing config file"""
-    def __init__(self,):
+
+    def __init__(self, ):
         self.config_file = os.path.expanduser(config_path)
         self.lock = FileLock(self.config_file + '.lock', timeout=10)
         self.lock.acquire()
@@ -78,7 +79,7 @@ class Config():
 
     # to allow direct access to config dict
     def __getitem__(self, item):
-            return self._config_data[item]
+        return self._config_data[item]
 
     def get(self, item, default):
         return self._config_data.get(item, default)
@@ -109,16 +110,17 @@ class MontiorsController:
         any_changed = False
         from threading import Thread
         for ip, host_data in self.config['hosts'].items():
-            threads=[]
+            threads = []
             for monitor in host_data['monitors']:
-                retval=[]
-                t=Thread(target=self.process_monitor, args=(host_data, ip, monitor,
-                                               new_global, old_global, retval))
+                retval = []
+                t = Thread(target=self.process_monitor,
+                           args=(host_data, ip, monitor,
+                                 new_global, old_global, retval))
                 t.start()
                 threads.append((t, retval))
             for t, retval in threads:
                 t.join()
-                changed=retval[0]
+                changed = retval[0]
                 any_changed |= changed
 
         if any_changed:
@@ -210,8 +212,6 @@ class MontiorsController:
         elif val < MIN_BRIGHTNESS:
             logging.info('min brightness')
             return MIN_BRIGHTNESS, self.BrightnessClampEnum.MIN
-
-
 
 
 class LocalMonitorController:
