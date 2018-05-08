@@ -91,6 +91,8 @@ class MontiorsController:
     def __init__(self, monitors=()):
         self.config = Config()
         self.monitors = monitors
+        self.min_offset = 1000
+        self.max_offset = -1000
 
         if self.config.debug:
             logging.basicConfig(level=logging.DEBUG)
@@ -101,15 +103,8 @@ class MontiorsController:
             'working dir: {}'.format(os.path.abspath(os.path.curdir)))
 
     def change_all_brightness(self, brightness_delta_steps):
-        delta = brightness_delta_steps * self.config['step']
-        old_global = self.config.brightness
-
-        self.get_offset_limits()
-        # negative brightness are allowed, for monitors with positive offset
-        new_global = self.clamp_global_brightness(old_global + delta)
-
-        logging.debug(
-            'delta {} old {} new {}'.format(delta, old_global, new_global))
+        new_global, old_global = self.get_global_brightness(
+            brightness_delta_steps)
 
         any_changed = False
 
@@ -135,15 +130,26 @@ class MontiorsController:
             # All montors at their limit. No changes
             logging.debug('No changes')
 
+    def get_global_brightness(self, brightness_delta_steps):
+        delta = brightness_delta_steps * self.config['step']
+
+        old_global = self.config.brightness
+        self.get_offset_limits()
+
+        # negative brightness are allowed, for monitors with positive offset
+        new_global = self.clamp_global_brightness(old_global + delta)
+        logging.debug(
+            'delta {} old {} new {}'.format(delta, old_global, new_global))
+        return new_global, old_global
+
     def get_offset_limits(self):
-        self.min_offset = 1000
-        self.max_offset = -1000
-        for ip, host_data in self.config['hosts'].items():
-            for monitor in host_data['monitors']:
-                self.min_offset = min(self.min_offset,
-                                      monitor['brightness_offset'])
-                self.max_offset = max(self.max_offset,
-                                      monitor['brightness_offset'])
+        offsets = [monitor['brightness_offset']
+                   for host_data in self.config['hosts'].values()
+                   for monitor in host_data['monitors']
+                   ]
+
+        self.min_offset = min(offsets)
+        self.max_offset = max(offsets)
 
     def clamp_global_brightness(self, val):
         """Apply limits"""
@@ -162,30 +168,31 @@ class MontiorsController:
     def process_monitor(self, host_data, ip, monitor, new_global, old_global,
                         retval):
         cmd = self.get_cmd(host_data, monitor)
-        old = old_global * monitor['brightness_mult'] + monitor[
-            'brightness_offset']
-        old, old_clamped = self.clamp_brightness(old)
-        # new*mult + offset
-        new = new_global * monitor['brightness_mult'] + monitor[
-            'brightness_offset']
-        new, clamped = self.clamp_brightness(new)
+
+        old, old_clamped = self.get_calculated_per_monitor_brightness(
+            monitor,
+            old_global,
+        )
+        new, clamped = self.get_calculated_per_monitor_brightness(
+            monitor,
+            new_global,
+        )
+
+        # actual brightness changed
         changed = new != old
         if changed:
             logging.debug('host {} old {} new {}'.format(ip, old, new))
             self.set_brightness(cmd, ip, new, monitor)
 
-        # restore contrast
         if self.BrightnessClampEnum.NO_CLAMP == clamped:
-            self.set_contrast(cmd, ip, monitor['contrast_norm'],
-                              monitor)
+            self.set_default_contrast(cmd, ip, monitor)
         else:
-            changed = clamped != old_clamped
+            # set min/max contrast
             if clamped == self.BrightnessClampEnum.MIN:
-                self.set_contrast(
-                    cmd, ip, monitor['contrast_min'], monitor)
+                self.set_min_contrast(cmd, ip, monitor)
             elif clamped == self.BrightnessClampEnum.MAX:
-                self.set_contrast(
-                    cmd, ip, monitor['contrast_max'], monitor)
+                self.set_max_contrast(cmd, ip, monitor)
+            changed |= clamped != old_clamped
 
         # aka return from thread
         retval.append(changed)
@@ -198,35 +205,10 @@ class MontiorsController:
 
         return cmd
 
-    def set_brightness(self, cmd, ip, val, monitor):
-        cmd = cmd.format(
-            brightness=val,
-            mon_id=monitor['id'],
-            prop=monitor['brightness_prop_id'])
-        self.set_prop(cmd, ip)
-
-    def set_contrast(self, cmd, ip, val, monitor):
-        cmd = cmd.format(
-            brightness=val,
-            mon_id=monitor['id'],
-            prop=monitor['contrast_prop_id'])
-        self.set_prop(cmd, ip)
-
-    def set_prop(self, cmd, ip):
-        """change brightness for local or remote monitor"""
-        if ip in LOCAL_IP:
-            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, check=True)
-        else:
-            self.send_remote_command(ip, cmd)
-
-    def send_remote_command(self, ip, data):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.connect((ip, PORT))
-            sock.sendall(str(data).encode())
-        finally:
-            sock.close()
+    def get_calculated_per_monitor_brightness(self, monitor, old_global):
+        res = old_global * monitor['brightness_mult'] + monitor[
+            'brightness_offset']
+        return self.clamp_brightness(res)
 
     class BrightnessClampEnum(Enum):
         MIN = 0
@@ -243,6 +225,47 @@ class MontiorsController:
         elif val < MIN_BRIGHTNESS:
             logging.info('min brightness')
             return MIN_BRIGHTNESS, self.BrightnessClampEnum.MIN
+
+    def set_brightness(self, cmd, ip, val, monitor):
+        cmd = cmd.format(
+            brightness=val,
+            mon_id=monitor['id'],
+            prop=monitor['brightness_prop_id'])
+        self.set_prop(cmd, ip)
+
+    def set_contrast(self, cmd, ip, val, monitor):
+        cmd = cmd.format(
+            brightness=val,
+            mon_id=monitor['id'],
+            prop=monitor['contrast_prop_id'])
+        self.set_prop(cmd, ip)
+
+    def set_prop(self, cmd, ip):
+        """change brightness or contrast for local or remote monitor"""
+        if ip in LOCAL_IP:
+            subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, check=True)
+        else:
+            self.send_remote_command(ip, cmd)
+
+    def send_remote_command(self, ip, data):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((ip, PORT))
+            sock.sendall(str(data).encode())
+        finally:
+            sock.close()
+
+    def set_max_contrast(self, cmd, ip, monitor):
+        self.set_contrast(
+            cmd, ip, monitor['contrast_max'], monitor)
+
+    def set_min_contrast(self, cmd, ip, monitor):
+        self.set_contrast(
+            cmd, ip, monitor['contrast_min'], monitor)
+
+    def set_default_contrast(self, cmd, ip, monitor):
+        self.set_contrast(cmd, ip, monitor['contrast_norm'], monitor)
 
 
 class LocalMonitorController:
