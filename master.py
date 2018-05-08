@@ -184,8 +184,10 @@ class MontiorsController:
             logging.debug('host {} old {} new {}'.format(ip, old, new))
             self.set_brightness(cmd, ip, new, monitor)
 
-        if self.BrightnessClampEnum.NO_CLAMP == clamped:
+        if (self.BrightnessClampEnum.NO_CLAMP == clamped and
+                old_clamped != self.BrightnessClampEnum.NO_CLAMP):
             self.set_default_contrast(cmd, ip, monitor)
+            logging.debug('restoring contrast')
         else:
             # set min/max contrast
             if clamped == self.BrightnessClampEnum.MIN:
