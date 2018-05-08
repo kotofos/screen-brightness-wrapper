@@ -9,6 +9,7 @@ import time
 import re
 from collections import OrderedDict
 from enum import Enum
+from threading import Thread
 
 import yaml
 from filelock import FileLock
@@ -28,7 +29,7 @@ flock_log.setLevel('WARNING')
 # todo config docs
 # todo supported backends
 
-class Config():
+class Config:
     """Class for accessing config file"""
 
     def __init__(self, ):
@@ -86,9 +87,10 @@ class Config():
 
 
 class MontiorsController:
-    def __init__(self, montors=()):
+
+    def __init__(self, monitors=()):
         self.config = Config()
-        self.monitors = montors
+        self.monitors = monitors
 
         if self.config.debug:
             logging.basicConfig(level=logging.DEBUG)
@@ -101,23 +103,26 @@ class MontiorsController:
     def change_all_brightness(self, brightness_delta_steps):
         delta = brightness_delta_steps * self.config['step']
         old_global = self.config.brightness
+
+        self.get_offset_limits()
         # negative brightness are allowed, for monitors with positive offset
-        new_global = old_global + delta
+        new_global = self.clamp_global_brightness(old_global + delta)
 
         logging.debug(
             'delta {} old {} new {}'.format(delta, old_global, new_global))
 
         any_changed = False
-        from threading import Thread
-        for ip, host_data in self.config['hosts'].items():
+
+        for ip, host_dict in self.config['hosts'].items():
             threads = []
-            for monitor in host_data['monitors']:
+            for monitor in host_dict['monitors']:
                 retval = []
                 t = Thread(target=self.process_monitor,
-                           args=(host_data, ip, monitor,
+                           args=(host_dict, ip, monitor,
                                  new_global, old_global, retval))
                 t.start()
                 threads.append((t, retval))
+
             for t, retval in threads:
                 t.join()
                 changed = retval[0]
@@ -126,9 +131,33 @@ class MontiorsController:
         if any_changed:
             self.config.brightness = new_global
             self.config.save_config()
-        # All montors at their limit. No changes
         else:
+            # All montors at their limit. No changes
             logging.debug('No changes')
+
+    def get_offset_limits(self):
+        self.min_offset = 1000
+        self.max_offset = -1000
+        for ip, host_data in self.config['hosts'].items():
+            for monitor in host_data['monitors']:
+                self.min_offset = min(self.min_offset,
+                                      monitor['brightness_offset'])
+                self.max_offset = max(self.max_offset,
+                                      monitor['brightness_offset'])
+
+    def clamp_global_brightness(self, val):
+        """Apply limits"""
+        min_val = self.max_offset + MIN_BRIGHTNESS - 1
+        max_val = -self.min_offset + MAX_BRIGHTNESS + 1
+
+        if min_val <= val <= max_val:
+            return val
+        elif val > max_val:
+            logging.info('max global brightness')
+            return max_val
+        elif val < min_val:
+            logging.info('min global brightness')
+            return min_val
 
     def process_monitor(self, host_data, ip, monitor, new_global, old_global,
                         retval):
@@ -144,6 +173,7 @@ class MontiorsController:
         if changed:
             logging.debug('host {} old {} new {}'.format(ip, old, new))
             self.set_brightness(cmd, ip, new, monitor)
+
         # restore contrast
         if self.BrightnessClampEnum.NO_CLAMP == clamped:
             self.set_contrast(cmd, ip, monitor['contrast_norm'],
@@ -156,6 +186,7 @@ class MontiorsController:
             elif clamped == self.BrightnessClampEnum.MAX:
                 self.set_contrast(
                     cmd, ip, monitor['contrast_max'], monitor)
+
         # aka return from thread
         retval.append(changed)
 
